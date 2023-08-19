@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::{fs, thread};
+use anyhow::Context;
+use chrono::{NaiveDateTime, NaiveTime, ParseResult};
 use crossbeam::channel::{Receiver, Sender};
+use exif::{Exif, Tag};
 
 pub fn synchronize_source(source: &Path, target: &Path) -> anyhow::Result<()> {
     let (s, r) = crossbeam::channel::bounded(100);
@@ -49,6 +52,47 @@ fn scan_for_images(source: PathBuf, sender: &Sender<PathBuf>) {
 
 fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, target_dir: PathBuf) {
     while let Ok(p) = receiver.recv() {
-        println!("{worker_idx} - {p:?}");
+        match process_image(&p) {
+            Err(err) => eprintln!("Error processing image - {err}"),
+            Ok(maybe_exif) => {
+                if let Some(exif) = maybe_exif {
+                    if let Some(datetime) = extract_timestamp(&exif) {
+                        println!("{datetime:?}");
+                    } else {
+                        println!("No datetime for {p:?}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn process_image(image_path: &Path) -> anyhow::Result<Option<Exif>> {
+    let file = std::fs::File::open(&image_path)?;
+    let mut bufreader = std::io::BufReader::new(&file);
+    let exifreader = exif::Reader::new();
+    let exif = exifreader.read_from_container(&mut bufreader).ok();
+
+    Ok(exif)
+}
+
+fn extract_timestamp(exif: &Exif) -> Option<NaiveDateTime> {
+    let dt = exif
+        .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
+        .or_else(|| exif.get_field(exif::Tag::DateTime, exif::In::PRIMARY))
+        .or_else(|| exif.get_field(exif::Tag::DateTimeDigitized, exif::In::PRIMARY))
+        .map(|datetime| {
+            let datetime_str = datetime.value.display_as(Tag::DateTimeOriginal).to_string();
+            NaiveDateTime::parse_from_str(&datetime_str, "%Y-%m-%d %H:%M:%S")
+                .with_context(|| format!("source {datetime_str}"))
+        });
+
+    match dt {
+        None => None,
+        Some(Ok(dt)) => Some(dt),
+        Some(Err(err)) => {
+            eprintln!("Error parsing datetime - {err}");
+            None
+        }
     }
 }

@@ -7,8 +7,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
+chrono = "0.4.26"
 clap = { version = "4.3.21", features = ["derive"], optional = true }
 crossbeam = "0.8.2"
+kamadak-exif = "0.5.5"
 
 
 [features]
