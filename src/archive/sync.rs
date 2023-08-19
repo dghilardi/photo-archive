@@ -1,9 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::{fs, thread};
+use std::os::unix::prelude::OsStrExt;
 use anyhow::Context;
-use chrono::{NaiveDateTime, NaiveTime, ParseResult};
+use chrono::{Datelike, NaiveDateTime, NaiveTime, ParseResult};
+use crc::{Crc, CRC_32_ISCSI};
 use crossbeam::channel::{Receiver, Sender};
 use exif::{Exif, Tag};
+use image::{DynamicImage, ImageBuffer, ImageFormat};
+use image::imageops::FilterType;
 
 pub fn synchronize_source(source: &Path, target: &Path) -> anyhow::Result<()> {
     let (s, r) = crossbeam::channel::bounded(100);
@@ -13,7 +17,8 @@ pub fn synchronize_source(source: &Path, target: &Path) -> anyhow::Result<()> {
         .map(|idx| {
             let receiver = r.clone();
             let owned_target = target.to_path_buf();
-            thread::spawn(move || process_images(idx, receiver, owned_target))
+            let owned_source = source.to_path_buf();
+            thread::spawn(move || process_images(idx, receiver, owned_source, owned_target))
         })
         .collect::<Vec<_>>();
 
@@ -44,13 +49,13 @@ fn scan_for_images(source: PathBuf, sender: &Sender<PathBuf>) {
                             .expect("Error sending path");
                     }
                 }
-            },
+            }
             Err(err) => eprintln!("Error reading dir entry - {err}"),
         }
     }
 }
 
-fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, target_dir: PathBuf) {
+fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, source_base_dir: PathBuf, target_dir: PathBuf) {
     while let Ok(p) = receiver.recv() {
         match process_image(&p) {
             Err(err) => eprintln!("Error processing image - {err}"),
@@ -58,6 +63,36 @@ fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, target_dir: Path
                 if let Some(exif) = maybe_exif {
                     if let Some(datetime) = extract_timestamp(&exif) {
                         println!("{datetime:?}");
+                        let date_path = target_dir.join(datetime.year().to_string()).join(datetime.format("%m.%d").to_string());
+                        let img_path = date_path.join("img");
+                        if !img_path.exists() {
+                            fs::create_dir_all(&img_path).expect("Error creating dir");
+                        }
+                        let source_dir = p.parent().expect("No source dir found");
+                        let link_path = date_path.join(
+                            format!("{}.{:08X}",
+                                    source_dir.file_name().and_then(|n| n.to_str()).expect("Error extracting parent dir"),
+                                    CASTAGNOLI.checksum(source_dir.strip_prefix(&source_base_dir).expect("Error stripping prefix").as_os_str().as_bytes())
+                            )
+                        );
+                        if !link_path.exists() {
+                            fs::create_dir_all(&link_path).expect("Error creating dir");
+                        }
+
+                        let out = image::open(p.as_path())
+                            .map_err(anyhow::Error::from)
+                            .and_then(|img| {
+                                let file_path = img_path.join(format!("{}_{:08X}.jpg", datetime.format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes())));
+                                let link_file_path = link_path.join(p.file_name().expect("Error extracting filename"));
+                                if !file_path.exists() {
+                                    generate_thumb(&img, file_path.as_path())?;
+                                }
+                                std::os::unix::fs::symlink(&file_path, link_file_path)?;
+                                Ok(file_path)
+                            });
+                        if let Err(err) = out {
+                            eprintln!("Error storing thumb {err}");
+                        }
                     } else {
                         println!("No datetime for {p:?}");
                     }
@@ -95,4 +130,18 @@ fn extract_timestamp(exif: &Exif) -> Option<NaiveDateTime> {
             None
         }
     }
+}
+
+pub const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
+
+fn generate_thumb(img: &DynamicImage, target: &Path) -> anyhow::Result<()> {
+    let (nheight, nwidth) = if img.height() > img.width() {
+        (300, img.width() * 300 / img.height())
+    } else {
+        (img.height() * 300 / img.width(), 300)
+    };
+
+    let resized = img.resize(nwidth, nheight, FilterType::Nearest);
+    resized.save_with_format(target, ImageFormat::Jpeg)?;
+    Ok(())
 }
