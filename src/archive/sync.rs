@@ -19,7 +19,12 @@ pub fn synchronize_source(partition_id: &str, source: &Path, target: &Path) -> a
             let owned_target = target.to_path_buf();
             let owned_source = source.to_path_buf();
             let partition_id = String::from(partition_id);
-            thread::spawn(move || process_images(idx, receiver, partition_id, owned_source, owned_target))
+            thread::spawn(move || process_images(WorkerContext {
+                worker_id: idx,
+                partition_id,
+                source_base_dir: owned_source,
+                target_base_dir: owned_target,
+            }, receiver))
         })
         .collect::<Vec<_>>();
 
@@ -56,8 +61,15 @@ fn scan_for_images(source: PathBuf, sender: &Sender<PathBuf>) {
     }
 }
 
-fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, partition_id: String, source_base_dir: PathBuf, target_dir: PathBuf) {
-    let partition_crc = CASTAGNOLI.checksum(partition_id.as_bytes());
+pub struct WorkerContext {
+    worker_id: u32,
+    partition_id: String,
+    source_base_dir: PathBuf,
+    target_base_dir: PathBuf,
+}
+
+fn process_images(ctx: WorkerContext, receiver: Receiver<PathBuf>) {
+    let partition_crc = CASTAGNOLI.checksum(ctx.partition_id.as_bytes());
     while let Ok(p) = receiver.recv() {
         match process_image(&p) {
             Err(err) => eprintln!("Error processing image - {err}"),
@@ -65,7 +77,7 @@ fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, partition_id: St
                 if let Some(exif) = maybe_exif {
                     if let Some(datetime) = extract_timestamp(&exif) {
                         println!("{datetime:?}");
-                        let date_path = target_dir.join(datetime.year().to_string()).join(datetime.format("%m.%d").to_string());
+                        let date_path = ctx.target_base_dir.join(datetime.year().to_string()).join(datetime.format("%m.%d").to_string());
                         let img_path = date_path.join("img");
                         if !img_path.exists() {
                             fs::create_dir_all(&img_path).expect("Error creating dir");
@@ -74,7 +86,7 @@ fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, partition_id: St
                         let link_path = date_path.join(
                             format!("{:08X}.{:08X}.{}",
                                     partition_crc,
-                                    CASTAGNOLI.checksum(source_dir.strip_prefix(&source_base_dir).expect("Error stripping prefix").as_os_str().as_bytes()),
+                                    CASTAGNOLI.checksum(source_dir.strip_prefix(&ctx.source_base_dir).expect("Error stripping prefix").as_os_str().as_bytes()),
                                     source_dir.file_name().and_then(|n| n.to_str()).expect("Error extracting parent dir"),
                             )
                         );
