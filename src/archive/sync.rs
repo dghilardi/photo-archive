@@ -8,15 +8,22 @@ use crossbeam::channel::{Receiver, Sender};
 use exif::{Exif, Tag};
 use image::{DynamicImage, ImageBuffer, ImageFormat};
 use image::imageops::FilterType;
+use polars::df;
+use polars::prelude::ParquetWriter;
+use crate::archive::records_store::{PhotoArchiveRecordsStore, PhotoArchiveRow};
 
 pub fn synchronize_source(partition_id: &str, source: &Path, target: &Path) -> anyhow::Result<()> {
     let (image_path_sender, image_path_receiver) = crossbeam::channel::bounded(100);
+    let (record_sender, record_receiver) = crossbeam::channel::bounded(100);
 
     let owned_source = source.to_path_buf();
+    let owned_target = target.to_path_buf();
     let scanner_hndl = thread::spawn(move || scan_for_images(owned_source, &image_path_sender));
+    let writer_hndl = thread::spawn(move || process_record_store(owned_target, record_receiver));
     let workers_hdnl = (0..4).into_iter()
         .map(|idx| {
             let receiver = image_path_receiver.clone();
+            let record_sender = record_sender.clone();
             let owned_target = target.to_path_buf();
             let owned_source = source.to_path_buf();
             let partition_id = String::from(partition_id);
@@ -25,14 +32,17 @@ pub fn synchronize_source(partition_id: &str, source: &Path, target: &Path) -> a
                 partition_id,
                 source_base_dir: owned_source,
                 target_base_dir: owned_target,
-            }, receiver))
+            }, record_sender, receiver))
         })
         .collect::<Vec<_>>();
+
+    drop(record_sender);
 
     scanner_hndl.join().expect("Scanner join produced error");
     for hndl in workers_hdnl {
         hndl.join().expect("Worker join produced error");
     }
+    writer_hndl.join().expect("Writer join produced error");
     Ok(())
 }
 
@@ -69,7 +79,7 @@ pub struct WorkerContext {
     target_base_dir: PathBuf,
 }
 
-fn process_images(ctx: WorkerContext, receiver: Receiver<PathBuf>) {
+fn process_images(ctx: WorkerContext, record_sender: Sender<PhotoArchiveRow>, receiver: Receiver<PathBuf>) {
     let partition_crc = CASTAGNOLI.checksum(ctx.partition_id.as_bytes());
     while let Ok(p) = receiver.recv() {
         match extract_exif(&p) {
@@ -104,7 +114,16 @@ fn process_images(ctx: WorkerContext, receiver: Receiver<PathBuf>) {
                                 if !file_path.exists() {
                                     generate_thumb(&img, file_path.as_path())?;
                                 }
-                                std::os::unix::fs::symlink(PathBuf::from("../img").join(file_name), link_file_path)?;
+                                if !link_file_path.exists() {
+                                    std::os::unix::fs::symlink(PathBuf::from("../img").join(file_name), link_file_path)?;
+
+                                    record_sender.send(PhotoArchiveRow {
+                                        timestamp: datetime,
+                                        source_id: ctx.partition_id.clone(),
+                                        source_path: p.strip_prefix(&ctx.source_base_dir).unwrap().to_path_buf(),
+                                        exif,
+                                    }).expect("Error sending photo archive row");
+                                }
                                 Ok(file_path)
                             });
                         if let Err(err) = out {
@@ -161,4 +180,11 @@ fn generate_thumb(img: &DynamicImage, target: &Path) -> anyhow::Result<()> {
     let resized = img.resize(nwidth, nheight, FilterType::Nearest);
     resized.save_with_format(target, ImageFormat::Jpeg)?;
     Ok(())
+}
+
+fn process_record_store(target_base_dir: PathBuf, receiver: Receiver<PhotoArchiveRow>) {
+    let store = PhotoArchiveRecordsStore::new(target_base_dir.as_path());
+    while let Ok(row) = receiver.recv() {
+        store.write(row);
+    }
 }
