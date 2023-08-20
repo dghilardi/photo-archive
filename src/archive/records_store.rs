@@ -14,6 +14,9 @@ pub struct PhotoArchiveRow {
     pub source_id: String,
     pub source_path: PathBuf,
     pub exif: Exif,
+    pub size: u64,
+    pub height: u32,
+    pub width: u32,
 }
 
 pub struct PhotoArchiveRecordsStore {
@@ -32,7 +35,10 @@ impl PhotoArchiveRecordsStore {
             timestamp: row.timestamp.timestamp(),
             source: row.source_id,
             path: row.source_path.as_os_str().to_str().map(ToString::to_string).unwrap_or_default(),
-            exif: row.exif.fields().map(|f| (format!("{}:{}", f.tag, f.ifd_num), f.display_value().to_string())).collect::<HashMap<String, String>>(),
+            exif: row.exif.fields().map(|f| (format!("{}:{}", f.tag.number(), f.ifd_num.0), f.display_value().to_string())).collect::<HashMap<String, String>>(),
+            size: row.size,
+            height: row.height,
+            width: row.width,
         }).unwrap();
 
         let mut file = std::fs::File::options()
@@ -48,9 +54,19 @@ impl PhotoArchiveRecordsStore {
 
 #[derive(Serialize)]
 struct PhotoArchiveJsonRow {
+    #[serde(rename="ts")]
     timestamp: i64,
+    #[serde(rename="src")]
     source: String,
+    #[serde(rename="pth")]
     path: String,
+    #[serde(rename="exf")]
     exif: HashMap<String, String>,
+    #[serde(rename="siz")]
+    size: u64,
+    #[serde(rename="hgh")]
+    height: u32,
+    #[serde(rename="wdt")]
+    width: u32,
 }
 

@@ -122,6 +122,9 @@ fn process_images(ctx: WorkerContext, record_sender: Sender<PhotoArchiveRow>, re
                                         source_id: ctx.partition_id.clone(),
                                         source_path: p.strip_prefix(&ctx.source_base_dir).unwrap().to_path_buf(),
                                         exif,
+                                        size: fs::metadata(p).expect("Cannot extract file metadata").len(),
+                                        height: img.height(),
+                                        width: img.width(),
                                     }).expect("Error sending photo archive row");
                                 }
                                 Ok(file_path)
