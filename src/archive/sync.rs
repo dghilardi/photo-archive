@@ -9,7 +9,7 @@ use exif::{Exif, Tag};
 use image::{DynamicImage, ImageBuffer, ImageFormat};
 use image::imageops::FilterType;
 
-pub fn synchronize_source(source: &Path, target: &Path) -> anyhow::Result<()> {
+pub fn synchronize_source(partition_id: &str, source: &Path, target: &Path) -> anyhow::Result<()> {
     let (s, r) = crossbeam::channel::bounded(100);
     let owned_source = source.to_path_buf();
     let scanner_hndl = thread::spawn(move || scan_for_images(owned_source, &s));
@@ -18,7 +18,8 @@ pub fn synchronize_source(source: &Path, target: &Path) -> anyhow::Result<()> {
             let receiver = r.clone();
             let owned_target = target.to_path_buf();
             let owned_source = source.to_path_buf();
-            thread::spawn(move || process_images(idx, receiver, owned_source, owned_target))
+            let partition_id = String::from(partition_id);
+            thread::spawn(move || process_images(idx, receiver, partition_id, owned_source, owned_target))
         })
         .collect::<Vec<_>>();
 
@@ -55,7 +56,8 @@ fn scan_for_images(source: PathBuf, sender: &Sender<PathBuf>) {
     }
 }
 
-fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, source_base_dir: PathBuf, target_dir: PathBuf) {
+fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, partition_id: String, source_base_dir: PathBuf, target_dir: PathBuf) {
+    let partition_crc = CASTAGNOLI.checksum(partition_id.as_bytes());
     while let Ok(p) = receiver.recv() {
         match process_image(&p) {
             Err(err) => eprintln!("Error processing image - {err}"),
@@ -70,9 +72,10 @@ fn process_images(worker_idx: i32, receiver: Receiver<PathBuf>, source_base_dir:
                         }
                         let source_dir = p.parent().expect("No source dir found");
                         let link_path = date_path.join(
-                            format!("{}.{:08X}",
+                            format!("{:08X}.{:08X}.{}",
+                                    partition_crc,
+                                    CASTAGNOLI.checksum(source_dir.strip_prefix(&source_base_dir).expect("Error stripping prefix").as_os_str().as_bytes()),
                                     source_dir.file_name().and_then(|n| n.to_str()).expect("Error extracting parent dir"),
-                                    CASTAGNOLI.checksum(source_dir.strip_prefix(&source_base_dir).expect("Error stripping prefix").as_os_str().as_bytes())
                             )
                         );
                         if !link_path.exists() {

@@ -38,6 +38,6 @@ fn import_source(source_id: &str, target: &Path) {
         panic!("Target path is not a directory")
     }
 
-    synchronize_source(source.mount_point.as_path(), target)
+    synchronize_source(source_id, source.mount_point.as_path(), target)
         .expect("Error during synchronization")
 }
