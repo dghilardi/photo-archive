@@ -10,12 +10,13 @@ use image::{DynamicImage, ImageBuffer, ImageFormat};
 use image::imageops::FilterType;
 
 pub fn synchronize_source(partition_id: &str, source: &Path, target: &Path) -> anyhow::Result<()> {
-    let (s, r) = crossbeam::channel::bounded(100);
+    let (image_path_sender, image_path_receiver) = crossbeam::channel::bounded(100);
+
     let owned_source = source.to_path_buf();
-    let scanner_hndl = thread::spawn(move || scan_for_images(owned_source, &s));
+    let scanner_hndl = thread::spawn(move || scan_for_images(owned_source, &image_path_sender));
     let workers_hdnl = (0..4).into_iter()
         .map(|idx| {
-            let receiver = r.clone();
+            let receiver = image_path_receiver.clone();
             let owned_target = target.to_path_buf();
             let owned_source = source.to_path_buf();
             let partition_id = String::from(partition_id);
@@ -71,7 +72,7 @@ pub struct WorkerContext {
 fn process_images(ctx: WorkerContext, receiver: Receiver<PathBuf>) {
     let partition_crc = CASTAGNOLI.checksum(ctx.partition_id.as_bytes());
     while let Ok(p) = receiver.recv() {
-        match process_image(&p) {
+        match extract_exif(&p) {
             Err(err) => eprintln!("Error processing image - {err}"),
             Ok(maybe_exif) => {
                 if let Some(exif) = maybe_exif {
@@ -117,7 +118,7 @@ fn process_images(ctx: WorkerContext, receiver: Receiver<PathBuf>) {
     }
 }
 
-fn process_image(image_path: &Path) -> anyhow::Result<Option<Exif>> {
+fn extract_exif(image_path: &Path) -> anyhow::Result<Option<Exif>> {
     let file = std::fs::File::open(&image_path)?;
     let mut bufreader = std::io::BufReader::new(&file);
     let exifreader = exif::Reader::new();
