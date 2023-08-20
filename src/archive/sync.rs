@@ -98,12 +98,13 @@ fn process_images(ctx: WorkerContext, receiver: Receiver<PathBuf>) {
                         let out = image::open(p.as_path())
                             .map_err(anyhow::Error::from)
                             .and_then(|img| {
-                                let file_path = img_path.join(format!("{}_{:08X}.jpg", datetime.format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes())));
+                                let file_name = format!("{}_{:08X}.jpg", datetime.format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes()));
+                                let file_path = img_path.join(&file_name);
                                 let link_file_path = link_path.join(p.file_name().expect("Error extracting filename"));
                                 if !file_path.exists() {
                                     generate_thumb(&img, file_path.as_path())?;
                                 }
-                                std::os::unix::fs::symlink(&file_path, link_file_path)?;
+                                std::os::unix::fs::symlink(PathBuf::from("../img").join(file_name), link_file_path)?;
                                 Ok(file_path)
                             });
                         if let Err(err) = out {
