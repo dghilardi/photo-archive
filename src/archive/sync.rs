@@ -1,9 +1,13 @@
 use std::{fs, thread};
+use std::fmt::format;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::os::unix::prelude::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
 
-use anyhow::Context;
-use chrono::{Datelike, NaiveDateTime};
+use anyhow::{anyhow, Context};
+use chrono::{Datelike, NaiveDateTime, Utc};
 use crc::{Crc, CRC_32_ISCSI};
 use crossbeam::channel::{Receiver, Sender};
 use exif::{Exif, Tag};
@@ -30,7 +34,33 @@ pub enum SyncSource {
     },
 }
 
-pub fn synchronize_source(opts: SyncOpts, target: &Path) -> anyhow::Result<()> {
+pub enum SynchronizationEvent {
+    Stored { src: PathBuf, dst: PathBuf, generated: bool },
+    Skipped { src: PathBuf, existing: PathBuf },
+    Errored { src: PathBuf, cause: String },
+}
+
+pub struct SyncrhonizationTask {
+    events_stream: Receiver<SynchronizationEvent>,
+    handlers: Vec<JoinHandle<()>>,
+}
+
+impl SyncrhonizationTask {
+    pub fn join(self) -> anyhow::Result<()> {
+        drop(self.events_stream);
+        for handler in self.handlers {
+            handler.join()
+                .map_err(|err| anyhow!("Error joining thread - {err:?}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn evt_stream(&self) -> &Receiver<SynchronizationEvent> {
+        &self.events_stream
+    }
+}
+
+pub fn synchronize_source(opts: SyncOpts, target: &Path) -> anyhow::Result<SyncrhonizationTask> {
     let repo = SourcesRepo::new(target.to_path_buf());
     let (source, source_id) = match opts.source {
         SyncSource::New { id, name, group, tags } => {
@@ -49,15 +79,23 @@ pub fn synchronize_source(opts: SyncOpts, target: &Path) -> anyhow::Result<()> {
 
     let (image_path_sender, image_path_receiver) = crossbeam::channel::bounded(100);
     let (record_sender, record_receiver) = crossbeam::channel::bounded(100);
+    let (events_sender, events_receiver) = crossbeam::channel::unbounded();
+    let (logged_events_sender, logged_events_receiver) = crossbeam::channel::unbounded();
 
     let owned_source = source.to_path_buf();
     let owned_target = target.to_path_buf();
     let scanner_hndl = thread::spawn(move || scan_for_images(owned_source, &image_path_sender));
+    let logger_hndl = thread::spawn({
+        let owned_target = owned_target.clone();
+        let source_id = String::from(&source_id);
+        move || logger_worker(owned_target, source_id, events_receiver, logged_events_sender)
+    });
     let writer_hndl = thread::spawn(move || process_record_store(owned_target, record_receiver));
     let workers_hdnl = (0..4).into_iter()
         .map(|idx| {
             let receiver = image_path_receiver.clone();
             let record_sender = record_sender.clone();
+            let events_sender = events_sender.clone();
             let owned_target = target.to_path_buf();
             let owned_source = source.to_path_buf();
             let partition_id = String::from(&source_id);
@@ -66,18 +104,40 @@ pub fn synchronize_source(opts: SyncOpts, target: &Path) -> anyhow::Result<()> {
                 partition_id,
                 source_base_dir: owned_source,
                 target_base_dir: owned_target,
-            }, record_sender, receiver))
+            }, events_sender, record_sender, receiver))
         })
         .collect::<Vec<_>>();
 
-    drop(record_sender);
+    Ok(SyncrhonizationTask {
+        events_stream: logged_events_receiver,
+        handlers: [scanner_hndl, writer_hndl, logger_hndl]
+            .into_iter()
+            .chain(workers_hdnl)
+            .collect(),
+    })
+}
 
-    scanner_hndl.join().expect("Scanner join produced error");
-    for hndl in workers_hdnl {
-        hndl.join().expect("Worker join produced error");
+fn logger_worker(archive_path: PathBuf, source_id: String, evt_receiver: Receiver<SynchronizationEvent>, evt_sender: Sender<SynchronizationEvent>) {
+    let now = Utc::now();
+    let skipped_log_path = archive_path.join(format!("{}_{}_SKP.log", now.format("%Y%m%d-%H%M"), source_id));
+    let errored_log_path = archive_path.join(format!("{}_{}_ERR.log", now.format("%Y%m%d-%H%M"), source_id));
+    let completed_log_path = archive_path.join(format!("{}_{}_CMP.log", now.format("%Y%m%d-%H%M"), source_id));
+
+    let mut skipped_f = BufWriter::new(File::create(skipped_log_path).expect("Error creating skipped log file"));
+    let mut errored_f = BufWriter::new(File::create(errored_log_path).expect("Error creating skipped log file"));
+    let mut completed_f = BufWriter::new(File::create(completed_log_path).expect("Error creating skipped log file"));
+
+    while let Ok(evt) = evt_receiver.recv() {
+        let out = match &evt {
+            SynchronizationEvent::Stored { src, dst, generated } => completed_f.write(format!("src: {src:?} dst: {dst:?} gen: {generated}\n").as_bytes()),
+            SynchronizationEvent::Skipped { src, existing } => skipped_f.write(format!("src: {src:?} ex: {existing:?}\n").as_bytes()),
+            SynchronizationEvent::Errored { src, cause } => errored_f.write(format!("src: {src:?} cause: '{cause}'\n").as_bytes()),
+        };
+        if let Err(err) = out {
+            eprintln!("Error writing log - {err}");
+        }
+        send_or_log(&evt_sender, evt);
     }
-    writer_hndl.join().expect("Writer join produced error");
-    Ok(())
 }
 
 fn scan_for_images(source: PathBuf, sender: &Sender<PathBuf>) {
@@ -113,15 +173,25 @@ pub struct WorkerContext {
     target_base_dir: PathBuf,
 }
 
-fn process_images(ctx: WorkerContext, record_sender: Sender<PhotoArchiveRow>, receiver: Receiver<PathBuf>) {
+fn send_or_log<T>(sender: &Sender<T>, msg: T) {
+    let out = sender.send(msg);
+    if let Err(err) = out {
+        eprintln!("Error sending to channel - {err}");
+    }
+}
+
+fn process_images(ctx: WorkerContext, events_sender: Sender<SynchronizationEvent>, record_sender: Sender<PhotoArchiveRow>, receiver: Receiver<PathBuf>) {
     let partition_crc = CASTAGNOLI.checksum(ctx.partition_id.as_bytes());
+    let send_evt = |evt: SynchronizationEvent| send_or_log(&events_sender, evt);
+
     while let Ok(p) = receiver.recv() {
         match extract_exif(&p) {
-            Err(err) => eprintln!("Error processing image - {err}"),
+            Err(err) => {
+                send_evt(SynchronizationEvent::Errored { src: p, cause: err.to_string() });
+            }
             Ok(maybe_exif) => {
                 if let Some(exif) = maybe_exif {
                     if let Some(datetime) = extract_timestamp(&exif) {
-                        println!("{datetime:?}");
                         let date_path = ctx.target_base_dir.join(datetime.year().to_string()).join(datetime.format("%m.%d").to_string());
                         let img_path = date_path.join("img");
                         if !img_path.exists() {
@@ -137,6 +207,7 @@ fn process_images(ctx: WorkerContext, record_sender: Sender<PhotoArchiveRow>, re
                         );
                         let link_file_path = link_path.join(p.file_name().expect("Error extracting filename"));
                         if link_file_path.exists() {
+                            send_evt(SynchronizationEvent::Skipped { src: p, existing: link_file_path });
                             continue;
                         } else if !link_path.exists() {
                             fs::create_dir_all(&link_path).expect("Error creating dir");
@@ -147,9 +218,12 @@ fn process_images(ctx: WorkerContext, record_sender: Sender<PhotoArchiveRow>, re
                             .and_then(|img| {
                                 let file_name = format!("{}_{:08X}.jpg", datetime.format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes()));
                                 let file_path = img_path.join(&file_name);
-                                if !file_path.exists() {
+                                let generated = if !file_path.exists() {
                                     generate_thumb(&img, file_path.as_path())?;
-                                }
+                                    true
+                                } else {
+                                    false
+                                };
                                 if !link_file_path.exists() {
                                     std::os::unix::fs::symlink(PathBuf::from("../img").join(file_name), link_file_path)?;
 
@@ -158,19 +232,23 @@ fn process_images(ctx: WorkerContext, record_sender: Sender<PhotoArchiveRow>, re
                                         source_id: ctx.partition_id.clone(),
                                         source_path: p.strip_prefix(&ctx.source_base_dir).unwrap().to_path_buf(),
                                         exif,
-                                        size: fs::metadata(p).expect("Cannot extract file metadata").len(),
+                                        size: fs::metadata(&p).expect("Cannot extract file metadata").len(),
                                         height: img.height(),
                                         width: img.width(),
                                     }).expect("Error sending photo archive row");
                                 }
-                                Ok(file_path)
+                                Ok((generated, file_path))
                             });
-                        if let Err(err) = out {
-                            eprintln!("Error storing thumb {err}");
+
+                        match out {
+                            Err(err) => send_evt(SynchronizationEvent::Errored { src: p, cause: format!("Error processing image - {err}") }),
+                            Ok((generated, dst_path)) => send_evt(SynchronizationEvent::Stored { src: p, dst: dst_path, generated }),
                         }
                     } else {
-                        println!("No datetime for {p:?}");
+                        send_evt(SynchronizationEvent::Errored { src: p, cause: String::from("Could not extract timestamp from exif") });
                     }
+                } else {
+                    send_evt(SynchronizationEvent::Errored { src: p, cause: String::from("No exif metadata was found") });
                 }
             }
         }

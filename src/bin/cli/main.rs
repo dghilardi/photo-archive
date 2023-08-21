@@ -3,7 +3,7 @@ use std::fs::create_dir_all;
 use anyhow::{anyhow, Context};
 use clap::Parser;
 use inquire::{Select, Text};
-use photo_archive::archive::sync::{synchronize_source, SyncOpts, SyncSource};
+use photo_archive::archive::sync::{SynchronizationEvent, synchronize_source, SyncOpts, SyncSource};
 
 use photo_archive::common::fs::{list_mounted_partitions, partition_by_id};
 use photo_archive::repository::sources::SourcesRepo;
@@ -70,14 +70,25 @@ fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
             .prompt()
     )?;
 
-    synchronize_source(SyncOpts {
+    let task = synchronize_source(SyncOpts {
         source: SyncSource::New {
             id: source_part.info.partition_id,
             name: source_name,
             group: source_group,
             tags: vec![],
         },
-    }, &args.target)
+    }, &args.target)?;
+
+    while let Ok(evt) = task.evt_stream().recv() {
+        match evt {
+            SynchronizationEvent::Stored { src, dst, generated } => println!("[STR] {src:?} -> {dst:?} [gen: {generated}]"),
+            SynchronizationEvent::Skipped { src, existing } => println!("[SKP] {src:?} (existing: {existing:?})"),
+            SynchronizationEvent::Errored { src, cause } => println!("[ERR] {src:?} - {cause}"),
+        }
+    }
+
+    task.join()?;
+    Ok(())
 }
 
 fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
@@ -105,9 +116,20 @@ fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
                 .context("Error reading source_id")
         })?;
 
-    synchronize_source(SyncOpts {
+    let task = synchronize_source(SyncOpts {
         source: SyncSource::Existing {
             id: source_part.info.partition_id,
         },
-    }, &args.target)
+    }, &args.target)?;
+
+    while let Ok(evt) = task.evt_stream().recv() {
+        match evt {
+            SynchronizationEvent::Stored { src, dst, generated } => println!("[STR] {src:?} -> {dst:?} [gen: {generated}]"),
+            SynchronizationEvent::Skipped { src, existing } => println!("[SKP] {src:?} (existing: {existing:?})"),
+            SynchronizationEvent::Errored { src, cause } => println!("[ERR] {src:?} - {cause}"),
+        }
+    }
+
+    task.join()?;
+    Ok(())
 }
