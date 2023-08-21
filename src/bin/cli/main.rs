@@ -1,6 +1,5 @@
 use std::ffi::OsStr;
 use std::fs::create_dir_all;
-use std::path::Path;
 use anyhow::{anyhow, Context};
 use clap::Parser;
 use inquire::{Select, Text};
@@ -29,7 +28,7 @@ pub fn main() {
 
 fn fetch_and_print_sources() -> anyhow::Result<()> {
     let partitions = list_mounted_partitions()
-        .expect("Error reading partitions");
+        .context("Error reading partitions")?;
 
     for partition in partitions {
         println!("{partition}");
@@ -40,9 +39,9 @@ fn fetch_and_print_sources() -> anyhow::Result<()> {
 fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
     if !args.target.exists() {
         create_dir_all(&args.target)
-            .expect("Error during target dir creation");
+            .context("Error during target dir creation")?;
     } else if !args.target.is_dir() {
-        panic!("Target path is not a directory")
+        anyhow::bail!("Target path is not a directory")
     }
 
     let source_part = args.source_id
@@ -84,9 +83,9 @@ fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
 fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
     if !args.target.exists() {
         create_dir_all(&args.target)
-            .expect("Error during target dir creation");
+            .context("Error during target dir creation")?;
     } else if !args.target.is_dir() {
-        panic!("Target path is not a directory")
+        anyhow::bail!("Target path is not a directory")
     }
 
     let source_part = args.source_id
