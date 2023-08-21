@@ -1,18 +1,52 @@
-use std::path::{Path, PathBuf};
 use std::{fs, thread};
 use std::os::unix::prelude::OsStrExt;
+use std::path::{Path, PathBuf};
+
 use anyhow::Context;
-use chrono::{Datelike, NaiveDateTime, NaiveTime, ParseResult};
+use chrono::{Datelike, NaiveDateTime};
 use crc::{Crc, CRC_32_ISCSI};
 use crossbeam::channel::{Receiver, Sender};
 use exif::{Exif, Tag};
-use image::{DynamicImage, ImageBuffer, ImageFormat};
+use image::{DynamicImage, ImageFormat};
 use image::imageops::FilterType;
-use polars::df;
-use polars::prelude::ParquetWriter;
-use crate::archive::records_store::{PhotoArchiveRecordsStore, PhotoArchiveRow};
 
-pub fn synchronize_source(partition_id: &str, source: &Path, target: &Path) -> anyhow::Result<()> {
+use crate::archive::records_store::{PhotoArchiveRecordsStore, PhotoArchiveRow};
+use crate::common::fs::partition_by_id;
+use crate::repository::sources::{SourceJsonRow, SourcesRepo};
+
+pub struct SyncOpts {
+    pub source: SyncSource,
+}
+
+pub enum SyncSource {
+    New {
+        id: String,
+        name: String,
+        group: String,
+        tags: Vec<String>,
+    },
+    Existing {
+        id: String
+    },
+}
+
+pub fn synchronize_source(opts: SyncOpts, target: &Path) -> anyhow::Result<()> {
+    let repo = SourcesRepo::new(target.to_path_buf());
+    let (source, source_id) = match opts.source {
+        SyncSource::New { id, name, group, tags } => {
+            let mount_info = partition_by_id(&id)?;
+            repo.write_entry(SourceJsonRow { id: id.clone(), name, group, tags })?;
+            (mount_info.mount_point, id)
+        }
+        SyncSource::Existing { id } => {
+            let mount_info = partition_by_id(&id)?;
+            repo.find_by_id(&id)?
+                .ok_or_else(|| anyhow::anyhow!("Source {id} is not currently registered"))?;
+
+            (mount_info.mount_point, id)
+        }
+    };
+
     let (image_path_sender, image_path_receiver) = crossbeam::channel::bounded(100);
     let (record_sender, record_receiver) = crossbeam::channel::bounded(100);
 
@@ -26,7 +60,7 @@ pub fn synchronize_source(partition_id: &str, source: &Path, target: &Path) -> a
             let record_sender = record_sender.clone();
             let owned_target = target.to_path_buf();
             let owned_source = source.to_path_buf();
-            let partition_id = String::from(partition_id);
+            let partition_id = String::from(&source_id);
             thread::spawn(move || process_images(WorkerContext {
                 worker_id: idx,
                 partition_id,
@@ -101,7 +135,10 @@ fn process_images(ctx: WorkerContext, record_sender: Sender<PhotoArchiveRow>, re
                                     source_dir.file_name().and_then(|n| n.to_str()).expect("Error extracting parent dir"),
                             )
                         );
-                        if !link_path.exists() {
+                        let link_file_path = link_path.join(p.file_name().expect("Error extracting filename"));
+                        if link_file_path.exists() {
+                            continue;
+                        } else if !link_path.exists() {
                             fs::create_dir_all(&link_path).expect("Error creating dir");
                         }
 
@@ -110,7 +147,6 @@ fn process_images(ctx: WorkerContext, record_sender: Sender<PhotoArchiveRow>, re
                             .and_then(|img| {
                                 let file_name = format!("{}_{:08X}.jpg", datetime.format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes()));
                                 let file_path = img_path.join(&file_name);
-                                let link_file_path = link_path.join(p.file_name().expect("Error extracting filename"));
                                 if !file_path.exists() {
                                     generate_thumb(&img, file_path.as_path())?;
                                 }

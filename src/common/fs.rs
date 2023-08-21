@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -76,6 +77,12 @@ pub struct MountedPartitionInfo {
     pub mount_point: PathBuf,
     pub fs_type: String,
     pub info: PartitionInfo,
+}
+
+impl Display for MountedPartitionInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\t{}", self.info.partition_id, self.mount_point.as_os_str().to_str().map(ToString::to_string).unwrap_or_default())
+    }
 }
 
 struct ProcMountEntry {
