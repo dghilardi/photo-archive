@@ -16,11 +16,7 @@ pub enum PhotoArchiveCommand {
     /// Import source into archive
     ImportSource(ImportSourceCliArgs),
     /// Import source into archive
-    SyncSource {
-        /// Id of the source to import
-        #[arg(short, long)]
-        source_id: Option<String>,
-    }
+    SyncSource(SyncSourceCliArgs),
 }
 
 #[derive(Args, Debug)]
@@ -39,5 +35,15 @@ pub struct ImportSourceCliArgs {
     pub source_tags: Vec<String>,
     /// Archive path
     #[arg(short, long)]
-    pub target: PathBuf
+    pub target: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct SyncSourceCliArgs {
+    /// Id of the source to import
+    #[arg(short, long)]
+    pub source_id: Option<String>,
+    /// Archive path
+    #[arg(short, long)]
+    pub target: PathBuf,
 }

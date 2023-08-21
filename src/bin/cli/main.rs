@@ -7,28 +7,34 @@ use inquire::{Select, Text};
 use photo_archive::archive::sync::{synchronize_source, SyncOpts, SyncSource};
 
 use photo_archive::common::fs::{list_mounted_partitions, partition_by_id};
+use photo_archive::repository::sources::SourcesRepo;
 
-use crate::args::{ImportSourceCliArgs, PhotoArchiveArgs, PhotoArchiveCommand};
+use crate::args::{ImportSourceCliArgs, PhotoArchiveArgs, PhotoArchiveCommand, SyncSourceCliArgs};
 
 mod args;
 
 pub fn main() {
     let args: PhotoArchiveArgs = PhotoArchiveArgs::parse();
 
-    match args.subcommand {
+    let out = match args.subcommand {
         PhotoArchiveCommand::ListSources => fetch_and_print_sources(),
-        PhotoArchiveCommand::ImportSource(args) => import_source(args).expect("Error importing source"),
-        PhotoArchiveCommand::SyncSource { .. } => todo!()
+        PhotoArchiveCommand::ImportSource(args) => import_source(args),
+        PhotoArchiveCommand::SyncSource(args) => sync_source(args),
+    };
+
+    if let Err(err) = out {
+        eprintln!("Error - {err}");
     }
 }
 
-fn fetch_and_print_sources() {
+fn fetch_and_print_sources() -> anyhow::Result<()> {
     let partitions = list_mounted_partitions()
         .expect("Error reading partitions");
 
     for partition in partitions {
-        println!("{}\t{}", partition.info.partition_id, partition.mount_point.to_str().unwrap());
+        println!("{partition}");
     }
+    Ok(())
 }
 
 fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
@@ -71,6 +77,38 @@ fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
             name: source_name,
             group: source_group,
             tags: vec![],
+        },
+    }, &args.target)
+}
+
+fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
+    if !args.target.exists() {
+        create_dir_all(&args.target)
+            .expect("Error during target dir creation");
+    } else if !args.target.is_dir() {
+        panic!("Target path is not a directory")
+    }
+
+    let source_part = args.source_id
+        .map(|source_id| partition_by_id(&source_id).context("Error mapping source_id"))
+        .unwrap_or_else(|| {
+            let repo = SourcesRepo::new(args.target.clone());
+            let registered_sources = repo.all()?;
+            let mut available_partitions = list_mounted_partitions()?;
+            available_partitions.retain(|src| registered_sources.iter().any(|reg| reg.id.eq(&src.info.partition_id)));
+
+            if available_partitions.is_empty() {
+                anyhow::bail!("None of the registered partitions is currently mounted");
+            }
+
+            Select::new("Choose the source to scan", available_partitions)
+                .prompt()
+                .context("Error reading source_id")
+        })?;
+
+    synchronize_source(SyncOpts {
+        source: SyncSource::Existing {
+            id: source_part.info.partition_id,
         },
     }, &args.target)
 }

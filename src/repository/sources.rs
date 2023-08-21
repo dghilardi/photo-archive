@@ -43,6 +43,23 @@ impl SourcesRepo {
         }
     }
 
+    pub fn all(&self) -> anyhow::Result<Vec<SourceJsonRow>> {
+        let db_path = self.db_path();
+        if db_path.exists() {
+            let file = File::open(&db_path)?;
+            let reader = BufReader::new(file);
+
+            let entry = reader.lines()
+                .map(|res_line| res_line.and_then(|line| Ok(serde_json::from_str::<SourceJsonRow>(&line)?)))
+                .filter_map(|entry| entry.ok())
+                .collect();
+
+            Ok(entry)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     pub fn write_entry(&self, entry: SourceJsonRow) -> anyhow::Result<()> {
         if let Some(existing_entry) = self.find_by_id(&entry.id)? {
             anyhow::bail!("Source with id {} is already registered with name '{}'", existing_entry.id, existing_entry.name);
