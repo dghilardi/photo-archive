@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use chrono::{Datelike, NaiveDateTime};
+use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
 use exif::Exif;
 use serde::Serialize;
 
 pub struct PhotoArchiveRow {
-    pub timestamp: NaiveDateTime,
+    pub photo_ts: Option<NaiveDateTime>,
+    pub file_ts: DateTime<Utc>,
     pub source_id: String,
     pub source_path: PathBuf,
     pub exif: Option<Exif>,
@@ -29,7 +30,8 @@ impl PhotoArchiveRecordsStore {
 
     pub fn write(&self, row: PhotoArchiveRow) {
         let frame = serde_json::to_string(&PhotoArchiveJsonRow {
-            timestamp: row.timestamp.timestamp(),
+            timestamp: row.photo_ts.map(|ts| ts.timestamp()),
+            file_ts: row.file_ts.naive_local().timestamp(),
             source: row.source_id,
             path: row.source_path.as_os_str().to_str().map(ToString::to_string).unwrap_or_default(),
             exif: row.exif
@@ -44,7 +46,7 @@ impl PhotoArchiveRecordsStore {
             .read(true)
             .append(true)
             .create(true)
-            .open(self.base_dir.join(row.timestamp.year().to_string()).join("index.json")).unwrap();
+            .open(self.base_dir.join(row.photo_ts.map(|ts| ts.year().to_string()).unwrap_or_else(|| String::from("no-date"))).join("index.json")).unwrap();
 
         file.write(frame.as_bytes()).unwrap();
         file.write(b"\n").unwrap();
@@ -54,7 +56,9 @@ impl PhotoArchiveRecordsStore {
 #[derive(Serialize)]
 struct PhotoArchiveJsonRow {
     #[serde(rename="ts")]
-    timestamp: i64,
+    timestamp: Option<i64>,
+    #[serde(rename="fts")]
+    file_ts: i64,
     #[serde(rename="src")]
     source: String,
     #[serde(rename="pth")]
