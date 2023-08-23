@@ -10,7 +10,7 @@ pub struct PhotoArchiveRow {
     pub timestamp: NaiveDateTime,
     pub source_id: String,
     pub source_path: PathBuf,
-    pub exif: Exif,
+    pub exif: Option<Exif>,
     pub size: u64,
     pub height: u32,
     pub width: u32,
@@ -32,7 +32,9 @@ impl PhotoArchiveRecordsStore {
             timestamp: row.timestamp.timestamp(),
             source: row.source_id,
             path: row.source_path.as_os_str().to_str().map(ToString::to_string).unwrap_or_default(),
-            exif: row.exif.fields().map(|f| (format!("{}:{}", f.tag.number(), f.ifd_num.0), f.display_value().to_string())).collect::<HashMap<String, String>>(),
+            exif: row.exif
+                .map(|exif| exif.fields().map(|f| (format!("{}:{}", f.tag.number(), f.ifd_num.0), f.display_value().to_string())).collect::<HashMap<String, String>>())
+                .unwrap_or_default(),
             size: row.size,
             height: row.height,
             width: row.width,

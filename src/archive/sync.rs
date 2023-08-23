@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Context};
-use chrono::{Datelike, NaiveDateTime, Utc};
+use chrono::{Datelike, DateTime, FixedOffset, NaiveDateTime, Utc};
 use crc::{Crc, CRC_32_ISCSI};
 use crossbeam::channel::{Receiver, Sender};
 use exif::{Exif, Tag};
@@ -222,72 +222,84 @@ fn process_images(ctx: WorkerContext, events_sender: Sender<SynchronizationEvent
     let send_evt = |evt: SynchronizationEvent| send_or_log(&events_sender, evt);
 
     while let Ok(p) = receiver.recv() {
-        match extract_exif(&p) {
+        let (datetime, exif) = match extract_exif(&p).map(|maybe_exif| maybe_exif.map(|exif| (extract_timestamp(&exif), exif))) {
             Err(err) => {
-                send_evt(SynchronizationEvent::Errored { src: p, cause: err.to_string() });
+                eprintln!("Error extracting exif data - {err}");
+                (None, None)
             }
-            Ok(maybe_exif) => {
-                if let Some(exif) = maybe_exif {
-                    if let Some(datetime) = extract_timestamp(&exif) {
-                        let date_path = ctx.target_base_dir.join(datetime.year().to_string()).join(datetime.format("%m.%d").to_string());
-                        let img_path = date_path.join("img");
-                        if !img_path.exists() {
-                            fs::create_dir_all(&img_path).expect("Error creating dir");
-                        }
-                        let source_dir = p.parent().expect("No source dir found");
-                        let link_path = date_path.join(
-                            format!("{:08X}.{:08X}.{}",
-                                    partition_crc,
-                                    CASTAGNOLI.checksum(source_dir.strip_prefix(&ctx.source_base_dir).expect("Error stripping prefix").as_os_str().as_bytes()),
-                                    source_dir.file_name().and_then(|n| n.to_str()).expect("Error extracting parent dir"),
-                            )
-                        );
-                        let link_file_path = link_path.join(p.file_name().expect("Error extracting filename"));
-                        if link_file_path.exists() {
-                            send_evt(SynchronizationEvent::Skipped { src: p, existing: link_file_path });
-                            continue;
-                        } else if !link_path.exists() {
-                            fs::create_dir_all(&link_path).expect("Error creating dir");
-                        }
+            Ok(None) => {
+                (None, None)
+            }
+            Ok(Some((None, exif))) => {
+                (None, Some(exif))
+            }
+            Ok(Some((Some(datetime), exif))) => {
+                (Some(datetime), Some(exif))
+            }
+        };
 
-                        let out = image::open(p.as_path())
-                            .map_err(anyhow::Error::from)
-                            .and_then(|img| {
-                                let file_name = format!("{}_{:08X}.jpg", datetime.format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes()));
-                                let file_path = img_path.join(&file_name);
-                                let generated = if !file_path.exists() {
-                                    generate_thumb(&img, file_path.as_path())?;
-                                    true
-                                } else {
-                                    false
-                                };
-                                if !link_file_path.exists() {
-                                    std::os::unix::fs::symlink(PathBuf::from("../img").join(file_name), link_file_path)?;
+        let date_path = if let Some(datetime) = datetime {
+            ctx.target_base_dir.join(datetime.year().to_string()).join(datetime.format("%m.%d").to_string())
+        } else {
+            ctx.target_base_dir.join("no-date")
+        };
 
-                                    record_sender.send(PhotoArchiveRow {
-                                        timestamp: datetime,
-                                        source_id: ctx.partition_id.clone(),
-                                        source_path: p.strip_prefix(&ctx.source_base_dir).unwrap().to_path_buf(),
-                                        exif,
-                                        size: fs::metadata(&p).expect("Cannot extract file metadata").len(),
-                                        height: img.height(),
-                                        width: img.width(),
-                                    }).expect("Error sending photo archive row");
-                                }
-                                Ok((generated, file_path))
-                            });
+        let img_path = date_path.join("img");
+        if !img_path.exists() {
+            fs::create_dir_all(&img_path).expect("Error creating dir");
+        }
+        let source_dir = p.parent().expect("No source dir found");
+        let link_path = date_path.join(
+            format!("{:08X}.{:08X}.{}",
+                    partition_crc,
+                    CASTAGNOLI.checksum(source_dir.strip_prefix(&ctx.source_base_dir).expect("Error stripping prefix").as_os_str().as_bytes()),
+                    source_dir.file_name().and_then(|n| n.to_str()).expect("Error extracting parent dir"),
+            )
+        );
+        let link_file_path = link_path.join(p.file_name().expect("Error extracting filename"));
+        if link_file_path.exists() {
+            send_evt(SynchronizationEvent::Skipped { src: p, existing: link_file_path });
+            continue;
+        } else if !link_path.exists() {
+            fs::create_dir_all(&link_path).expect("Error creating dir");
+        }
 
-                        match out {
-                            Err(err) => send_evt(SynchronizationEvent::Errored { src: p, cause: format!("Error processing image - {err}") }),
-                            Ok((generated, dst_path)) => send_evt(SynchronizationEvent::Stored { src: p, dst: dst_path, generated }),
-                        }
-                    } else {
-                        send_evt(SynchronizationEvent::Errored { src: p, cause: String::from("Could not extract timestamp from exif") });
-                    }
+        let out = image::open(p.as_path())
+            .map_err(anyhow::Error::from)
+            .and_then(|img| {
+                let file_name = if let Some(datetime) = &datetime {
+                    format!("{}_{:08X}.jpg", datetime.format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes()))
                 } else {
-                    send_evt(SynchronizationEvent::Errored { src: p, cause: String::from("No exif metadata was found") });
+                    let creation_ts = std::fs::metadata(&p)?.created()?;
+                    format!("{}_{:08X}.jpg", DateTime::<Utc>::from(creation_ts).format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes()))
+                };
+                let file_path = img_path.join(&file_name);
+                let generated = if !file_path.exists() {
+                    generate_thumb(&img, file_path.as_path())?;
+                    true
+                } else {
+                    false
+                };
+                if !link_file_path.exists() {
+                    std::os::unix::fs::symlink(PathBuf::from("../img").join(file_name), link_file_path)?;
+
+                    record_sender.send(PhotoArchiveRow {
+                        timestamp: datetime.map(Ok::<_, anyhow::Error>)
+                            .unwrap_or_else(|| Ok(DateTime::<Utc>::from(fs::metadata(&p)?.created()?).naive_local()))?,
+                        source_id: ctx.partition_id.clone(),
+                        source_path: p.strip_prefix(&ctx.source_base_dir).unwrap().to_path_buf(),
+                        exif,
+                        size: fs::metadata(&p).expect("Cannot extract file metadata").len(),
+                        height: img.height(),
+                        width: img.width(),
+                    }).expect("Error sending photo archive row");
                 }
-            }
+                Ok((generated, file_path))
+            });
+
+        match out {
+            Err(err) => send_evt(SynchronizationEvent::Errored { src: p, cause: format!("Error processing image - {err}") }),
+            Ok((generated, dst_path)) => send_evt(SynchronizationEvent::Stored { src: p, dst: dst_path, generated }),
         }
     }
 }
