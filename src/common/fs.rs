@@ -36,10 +36,13 @@ fn partitions_by_uuid_lookup() -> Result<HashMap<String, PartitionInfo>, std::io
                 .ok()?;
 
             let partition_id = String::from(dir_entry.file_name().to_str()?);
-            Some((partition_id.clone(), PartitionInfo {
-                device_path,
-                partition_id,
-            }))
+            Some((
+                partition_id.clone(),
+                PartitionInfo {
+                    device_path,
+                    partition_id,
+                },
+            ))
         })
         .collect::<HashMap<_, _>>();
 
@@ -81,7 +84,16 @@ pub struct MountedPartitionInfo {
 
 impl Display for MountedPartitionInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}\t{}", self.info.partition_id, self.mount_point.as_os_str().to_str().map(ToString::to_string).unwrap_or_default())
+        write!(
+            f,
+            "{}\t{}",
+            self.info.partition_id,
+            self.mount_point
+                .as_os_str()
+                .to_str()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        )
     }
 }
 
@@ -112,7 +124,8 @@ fn read_proc_mounts() -> Result<Vec<ProcMountEntry>, std::io::Error> {
             mount_point: PathBuf::from(path),
             fs_type: String::from(fs_type),
             mode: String::from(mode),
-            dummy: fields.next()
+            dummy: fields
+                .next()
                 .map(|dummy| dummy.split(',').map(ToString::to_string).collect())
                 .unwrap_or_default(),
         });
@@ -145,12 +158,13 @@ pub fn list_mounted_partitions() -> Result<Vec<MountedPartitionInfo>, std::io::E
 }
 
 fn is_supported_fs(fs_type: &str) -> bool {
-    ["vfat", "ntfs3", "fuseblk"].contains(&fs_type)
+    ["vfat", "ntfs3", "fuseblk", "iso9660"].contains(&fs_type)
 }
 
 pub fn partition_by_id(partition_id: &str) -> Result<MountedPartitionInfo, std::io::Error> {
     let lookup = partitions_info_lookup()?;
-    let proc_mounts = read_proc_mounts()?.into_iter()
+    let proc_mounts = read_proc_mounts()?
+        .into_iter()
         .filter(|e| is_supported_fs(&e.fs_type))
         .filter_map(|e| lookup.get(&PathBuf::from(&e.device)).map(|pi| (pi, e)))
         .filter(|(pi, _e)| pi.partition_id.eq(partition_id))
