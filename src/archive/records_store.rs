@@ -1,12 +1,9 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use chrono::{Datelike, NaiveDateTime};
 use exif::Exif;
-use polars::df;
-use polars::export::ahash::HashMap;
-use polars::io::SerWriter;
-use polars::prelude::{ParquetWriter, NamedFrom, JsonWriter};
 use serde::Serialize;
 
 pub struct PhotoArchiveRow {
