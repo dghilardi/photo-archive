@@ -270,7 +270,7 @@ fn process_images(ctx: WorkerContext, events_sender: Sender<SynchronizationEvent
                 let file_name = if let Some(datetime) = &datetime {
                     format!("{}_{:08X}.jpg", datetime.format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes()))
                 } else {
-                    let creation_ts = std::fs::metadata(&p)?.created()?;
+                    let creation_ts = std::fs::metadata(&p)?.modified()?;
                     format!("{}_{:08X}.jpg", DateTime::<Utc>::from(creation_ts).format("%H%M%S"), CASTAGNOLI.checksum(img.as_bytes()))
                 };
                 let file_path = img_path.join(&file_name);
@@ -284,8 +284,8 @@ fn process_images(ctx: WorkerContext, events_sender: Sender<SynchronizationEvent
                     std::os::unix::fs::symlink(PathBuf::from("../img").join(file_name), link_file_path)?;
 
                     record_sender.send(PhotoArchiveRow {
-                        timestamp: datetime.map(Ok::<_, anyhow::Error>)
-                            .unwrap_or_else(|| Ok(DateTime::<Utc>::from(fs::metadata(&p)?.created()?).naive_local()))?,
+                        photo_ts: datetime,
+                        file_ts: DateTime::<Utc>::from(fs::metadata(&p)?.modified()?),
                         source_id: ctx.partition_id.clone(),
                         source_path: p.strip_prefix(&ctx.source_base_dir).unwrap().to_path_buf(),
                         exif,
