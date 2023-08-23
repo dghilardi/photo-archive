@@ -103,7 +103,7 @@ fn read_proc_mounts() -> Result<Vec<ProcMountEntry>, std::io::Error> {
     while file.read_line(&mut line)? != 0 {
         let mut fields = line.split_whitespace();
         let device = fields.next().unwrap();
-        let path = fields.next().unwrap();
+        let path = fields.next().unwrap().replace("\\040", " ");
         let fs_type = fields.next().unwrap();
         let mode = fields.next().unwrap();
 
@@ -145,7 +145,7 @@ pub fn list_mounted_partitions() -> Result<Vec<MountedPartitionInfo>, std::io::E
 }
 
 fn is_supported_fs(fs_type: &str) -> bool {
-    ["vfat", "ntfs3"].contains(&fs_type)
+    ["vfat", "ntfs3", "fuseblk"].contains(&fs_type)
 }
 
 pub fn partition_by_id(partition_id: &str) -> Result<MountedPartitionInfo, std::io::Error> {

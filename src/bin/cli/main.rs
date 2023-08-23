@@ -71,6 +71,7 @@ fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
     )?;
 
     let task = synchronize_source(SyncOpts {
+        count_images: true,
         source: SyncSource::New {
             id: source_part.info.partition_id,
             name: source_name,
@@ -79,11 +80,21 @@ fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
         },
     }, &args.target)?;
 
+    let mut total_images = 0;
+    let mut processed_images = 0;
+
     while let Ok(evt) = task.evt_stream().recv() {
+        if let SynchronizationEvent::ScanProgress { count } | SynchronizationEvent::ScanCompleted { count } = &evt {
+            total_images = *count;
+        } else {
+            processed_images += 1;
+        }
+        println!("{processed_images}/{total_images} ({:02.02}%)", (processed_images as f32 / total_images as f32 * 100.0));
         match evt {
             SynchronizationEvent::Stored { src, dst, generated } => println!("[STR] {src:?} -> {dst:?} [gen: {generated}]"),
             SynchronizationEvent::Skipped { src, existing } => println!("[SKP] {src:?} (existing: {existing:?})"),
             SynchronizationEvent::Errored { src, cause } => println!("[ERR] {src:?} - {cause}"),
+            SynchronizationEvent::ScanProgress { .. } | SynchronizationEvent::ScanCompleted { .. } => {}
         }
     }
 
@@ -117,16 +128,27 @@ fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
         })?;
 
     let task = synchronize_source(SyncOpts {
+        count_images: true,
         source: SyncSource::Existing {
             id: source_part.info.partition_id,
         },
     }, &args.target)?;
 
+    let mut total_images = 0;
+    let mut processed_images = 0;
+
     while let Ok(evt) = task.evt_stream().recv() {
+        if let SynchronizationEvent::ScanProgress { count } | SynchronizationEvent::ScanCompleted { count } = &evt {
+            total_images = *count;
+        } else {
+            processed_images += 1;
+        }
+        println!("{processed_images}/{total_images} ({:02.02}%)", (processed_images as f32 / total_images as f32 * 100.0));
         match evt {
             SynchronizationEvent::Stored { src, dst, generated } => println!("[STR] {src:?} -> {dst:?} [gen: {generated}]"),
             SynchronizationEvent::Skipped { src, existing } => println!("[SKP] {src:?} (existing: {existing:?})"),
             SynchronizationEvent::Errored { src, cause } => println!("[ERR] {src:?} - {cause}"),
+            SynchronizationEvent::ScanProgress { .. } | SynchronizationEvent::ScanCompleted { .. } => {}
         }
     }
 

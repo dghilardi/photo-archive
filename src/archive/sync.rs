@@ -2,9 +2,11 @@ use std::{fs, thread};
 use std::fmt::format;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::ops::Add;
 use std::os::unix::prelude::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Context};
 use chrono::{Datelike, NaiveDateTime, Utc};
@@ -19,6 +21,7 @@ use crate::common::fs::partition_by_id;
 use crate::repository::sources::{SourceJsonRow, SourcesRepo};
 
 pub struct SyncOpts {
+    pub count_images: bool,
     pub source: SyncSource,
 }
 
@@ -35,6 +38,8 @@ pub enum SyncSource {
 }
 
 pub enum SynchronizationEvent {
+    ScanProgress { count: u64 },
+    ScanCompleted { count: u64 },
     Stored { src: PathBuf, dst: PathBuf, generated: bool },
     Skipped { src: PathBuf, existing: PathBuf },
     Errored { src: PathBuf, cause: String },
@@ -81,6 +86,14 @@ pub fn synchronize_source(opts: SyncOpts, target: &Path) -> anyhow::Result<Syncr
     let (record_sender, record_receiver) = crossbeam::channel::bounded(100);
     let (events_sender, events_receiver) = crossbeam::channel::unbounded();
     let (logged_events_sender, logged_events_receiver) = crossbeam::channel::unbounded();
+
+    if opts.count_images {
+        thread::spawn({
+            let owned_source = source.to_path_buf();
+            let owned_events_sender = events_sender.clone();
+            move || count_images(owned_source, &owned_events_sender)
+        });
+    }
 
     let owned_source = source.to_path_buf();
     let owned_target = target.to_path_buf();
@@ -132,6 +145,7 @@ fn logger_worker(archive_path: PathBuf, source_id: String, evt_receiver: Receive
             SynchronizationEvent::Stored { src, dst, generated } => completed_f.write(format!("src: {src:?} dst: {dst:?} gen: {generated}\n").as_bytes()),
             SynchronizationEvent::Skipped { src, existing } => skipped_f.write(format!("src: {src:?} ex: {existing:?}\n").as_bytes()),
             SynchronizationEvent::Errored { src, cause } => errored_f.write(format!("src: {src:?} cause: '{cause}'\n").as_bytes()),
+            SynchronizationEvent::ScanProgress { .. } | SynchronizationEvent::ScanCompleted { .. } => Ok(0),
         };
         if let Err(err) = out {
             eprintln!("Error writing log - {err}");
@@ -141,12 +155,36 @@ fn logger_worker(archive_path: PathBuf, source_id: String, evt_receiver: Receive
 }
 
 fn scan_for_images(source: PathBuf, sender: &Sender<PathBuf>) {
+    scan_for_images_with_callback(source, &mut |entry| sender.send(entry).expect("Error sending path"));
+}
+
+fn count_images(source: PathBuf, sender: &Sender<SynchronizationEvent>) {
+    let mut count = 0;
+    let last_evt_sent_ts = SystemTime::now();
+    let mut callback = |_entry| {
+        count += 1;
+        if last_evt_sent_ts.add(Duration::from_millis(1000)) < SystemTime::now() {
+            let out = sender.send(SynchronizationEvent::ScanProgress { count });
+            if let Err(err) = out {
+                eprintln!("Error updating img count - {err}");
+            }
+        }
+    };
+    scan_for_images_with_callback(source, &mut callback);
+
+    let out = sender.send(SynchronizationEvent::ScanCompleted { count });
+    if let Err(err) = out {
+        eprintln!("Error updating img count - {err}");
+    }
+}
+
+fn scan_for_images_with_callback(source: PathBuf, callback: &mut impl FnMut(PathBuf)) {
     for entry_res in fs::read_dir(&source).expect("Error reading dir") {
         match entry_res {
             Ok(entry) => {
                 let entry_path = entry.path();
                 if entry_path.is_dir() {
-                    scan_for_images(entry_path, sender)
+                    scan_for_images_with_callback(entry_path, callback)
                 } else if entry_path.is_file() {
                     let ext = entry_path.extension()
                         .and_then(|ext| ext.to_str()).map(ToString::to_string)
@@ -155,9 +193,7 @@ fn scan_for_images(source: PathBuf, sender: &Sender<PathBuf>) {
 
                     let supported_format = ["jpg", "jpeg"].contains(&&ext[..]);
                     if supported_format {
-                        sender
-                            .send(entry_path)
-                            .expect("Error sending path");
+                        callback(entry_path);
                     }
                 }
             }
