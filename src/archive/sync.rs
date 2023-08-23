@@ -160,11 +160,12 @@ fn scan_for_images(source: PathBuf, sender: &Sender<PathBuf>) {
 
 fn count_images(source: PathBuf, sender: &Sender<SynchronizationEvent>) {
     let mut count = 0;
-    let last_evt_sent_ts = SystemTime::now();
+    let mut last_evt_sent_ts = SystemTime::now();
     let mut callback = |_entry| {
         count += 1;
         if last_evt_sent_ts.add(Duration::from_millis(1000)) < SystemTime::now() {
             let out = sender.send(SynchronizationEvent::ScanProgress { count });
+            last_evt_sent_ts = SystemTime::now();
             if let Err(err) = out {
                 eprintln!("Error updating img count - {err}");
             }
