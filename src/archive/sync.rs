@@ -256,7 +256,8 @@ fn scan_for_images_with_callback(source: PathBuf, callback: &mut impl FnMut(Path
         match entry_res {
             Ok(entry) => {
                 let entry_path = entry.path();
-                if entry_path.is_dir() {
+
+                if entry_path.is_dir() && !entry_path.is_symlink() {
                     scan_for_images_with_callback(entry_path, callback)
                 } else if entry_path.is_file() {
                     let ext = entry_path
