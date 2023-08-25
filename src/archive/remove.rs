@@ -5,6 +5,10 @@ use crate::archive::common::{build_filename, build_paths};
 use crate::archive::records_store::{PhotoArchiveJsonRow, PhotoArchiveRecordsStore};
 use crate::archive::sync::CASTAGNOLI;
 
+pub fn remove_by_source(target: PathBuf, source: &str) -> anyhow::Result<()> {
+    retain_images(target, |row| row.source_id().ne(source))
+}
+
 pub fn retain_images(target: PathBuf, mut condition: impl FnMut(&PhotoArchiveJsonRow) -> bool) -> anyhow::Result<()> {
     let store = PhotoArchiveRecordsStore::new(&target);
 

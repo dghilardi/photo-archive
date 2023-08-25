@@ -3,6 +3,7 @@ use std::fs::create_dir_all;
 use anyhow::{anyhow, Context};
 use clap::Parser;
 use inquire::{Select, Text};
+use photo_archive::archive::remove::remove_by_source;
 use photo_archive::archive::sync::{SynchronizationEvent, synchronize_source, SyncOpts, SyncSource};
 
 use photo_archive::common::fs::{list_mounted_partitions, partition_by_id};
@@ -184,6 +185,8 @@ fn remove_source(args: RemoveSourceCliArgs) -> anyhow::Result<()> {
                 .prompt()
                 .context("Error reading source_id")
         })?;
+
+    remove_by_source(args.target, &source_part.id)?;
 
     Ok(())
 }

@@ -73,7 +73,9 @@ impl PhotoArchiveRecordsStore {
             let file = File::open(&index_path)?;
             let reader = BufReader::new(file);
 
-            let temp_path = PathBuf::from(format!("/tmp/index.{}.{}.json", index_path.parent().unwrap().file_name().and_then(|name| name.to_str()).unwrap_or("-"), Utc::now().format("%Y%m%d-%H%M%S")));
+            let temp_path = index_path.parent()
+                .expect("Error extracting index parent")
+                .join(format!("index.{}.{}.json", index_path.parent().unwrap().file_name().and_then(|name| name.to_str()).unwrap_or("-"), Utc::now().format("%Y%m%d-%H%M%S")));
             let temp_file = File::create(&temp_path)?;
             let mut writer = BufWriter::new(temp_file);
 
