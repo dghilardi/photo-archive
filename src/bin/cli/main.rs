@@ -8,7 +8,7 @@ use photo_archive::archive::sync::{SynchronizationEvent, synchronize_source, Syn
 use photo_archive::common::fs::{list_mounted_partitions, partition_by_id};
 use photo_archive::repository::sources::SourcesRepo;
 
-use crate::args::{ImportSourceCliArgs, PhotoArchiveArgs, PhotoArchiveCommand, SyncSourceCliArgs};
+use crate::args::{ImportSourceCliArgs, PhotoArchiveArgs, PhotoArchiveCommand, RemoveSourceCliArgs, SyncSourceCliArgs};
 
 mod args;
 
@@ -19,6 +19,7 @@ pub fn main() {
         PhotoArchiveCommand::ListSources => fetch_and_print_sources(),
         PhotoArchiveCommand::ImportSource(args) => import_source(args),
         PhotoArchiveCommand::SyncSource(args) => sync_source(args),
+        PhotoArchiveCommand::RemoveSource(args) => remove_source(args),
     };
 
     if let Err(err) = out {
@@ -153,5 +154,34 @@ fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
     }
 
     task.join()?;
+    Ok(())
+}
+
+fn remove_source(args: RemoveSourceCliArgs) -> anyhow::Result<()> {
+    if !args.target.exists() {
+        anyhow::bail!("Target path does not exists")
+    } else if !args.target.is_dir() {
+        anyhow::bail!("Target path is not a directory")
+    }
+    let repo = SourcesRepo::new(args.target.clone());
+
+    let source_part = args.source_id
+        .map(|source_id| {
+            repo.find_by_id(&source_id)
+                .transpose()
+                .ok_or_else(|| anyhow!("Could not find registered source with id {source_id}"))?
+        })
+        .unwrap_or_else(|| {
+            let registered_sources = repo.all()?;
+
+            if registered_sources.is_empty() {
+                anyhow::bail!("There are no registered sources in the specified archive");
+            }
+
+            Select::new("Choose the source to remove", registered_sources)
+                .prompt()
+                .context("Error reading source_id")
+        })?;
+
     Ok(())
 }

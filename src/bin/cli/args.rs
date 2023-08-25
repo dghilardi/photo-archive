@@ -17,6 +17,8 @@ pub enum PhotoArchiveCommand {
     ImportSource(ImportSourceCliArgs),
     /// Import source into archive
     SyncSource(SyncSourceCliArgs),
+    /// Remove source from archive
+    RemoveSource(RemoveSourceCliArgs),
 }
 
 #[derive(Args, Debug)]
@@ -41,6 +43,16 @@ pub struct ImportSourceCliArgs {
 #[derive(Args, Debug)]
 pub struct SyncSourceCliArgs {
     /// Id of the source to import
+    #[arg(short, long)]
+    pub source_id: Option<String>,
+    /// Archive path
+    #[arg(short, long)]
+    pub target: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct RemoveSourceCliArgs {
+    /// Id of the source to remove
     #[arg(short, long)]
     pub source_id: Option<String>,
     /// Archive path

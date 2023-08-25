@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -13,6 +14,12 @@ pub struct SourceJsonRow {
     pub name: String,
     pub group: String,
     pub tags: Vec<String>,
+}
+
+impl Display for SourceJsonRow {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\t{}\t[{}]", self.id, self.name, self.group)
+    }
 }
 
 impl SourcesRepo {
