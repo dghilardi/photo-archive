@@ -92,9 +92,10 @@ fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
         }
         println!("{processed_images}/{total_images} ({:02.02}%)", (processed_images as f32 / total_images as f32 * 100.0));
         match evt {
-            SynchronizationEvent::Stored { src, dst, generated } => println!("[STR] {src:?} -> {dst:?} [gen: {generated}]"),
+            SynchronizationEvent::Stored { src, dst, generated, partial } => println!("[STR] {src:?} -> {dst:?} [gen: {generated}; par: {partial}]"),
             SynchronizationEvent::Skipped { src, existing } => println!("[SKP] {src:?} (existing: {existing:?})"),
             SynchronizationEvent::Errored { src, cause } => println!("[ERR] {src:?} - {cause}"),
+            SynchronizationEvent::Ignored { src, cause } => println!("[IGN] {src:?} - {cause})"),
             SynchronizationEvent::ScanProgress { .. } | SynchronizationEvent::ScanCompleted { .. } => {}
         }
     }
@@ -146,9 +147,10 @@ fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
         }
         println!("{processed_images}/{total_images} ({:02.02}%)", (processed_images as f32 / total_images as f32 * 100.0));
         match evt {
-            SynchronizationEvent::Stored { src, dst, generated } => println!("[STR] {src:?} -> {dst:?} [gen: {generated}]"),
+            SynchronizationEvent::Stored { src, dst, generated, partial } => println!("[STR] {src:?} -> {dst:?} [gen: {generated}; par: {partial}]"),
             SynchronizationEvent::Skipped { src, existing } => println!("[SKP] {src:?} (existing: {existing:?})"),
             SynchronizationEvent::Errored { src, cause } => println!("[ERR] {src:?} - {cause}"),
+            SynchronizationEvent::Ignored { src, cause } => println!("[IGN] {src:?} - {cause}"),
             SynchronizationEvent::ScanProgress { .. } | SynchronizationEvent::ScanCompleted { .. } => {}
         }
     }

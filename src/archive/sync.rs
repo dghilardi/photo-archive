@@ -15,6 +15,7 @@ use crossbeam::channel::{Receiver, Sender};
 use exif::{Exif, Tag};
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat};
+use crate::archive::common::{build_filename, build_paths};
 
 use crate::archive::records_store::{PhotoArchiveRecordsStore, PhotoArchiveRow};
 use crate::common::fs::partition_by_id;
@@ -48,10 +49,15 @@ pub enum SynchronizationEvent {
         src: PathBuf,
         dst: PathBuf,
         generated: bool,
+        partial: bool,
     },
     Skipped {
         src: PathBuf,
         existing: PathBuf,
+    },
+    Ignored {
+        src: PathBuf,
+        cause: String,
     },
     Errored {
         src: PathBuf,
@@ -177,8 +183,8 @@ fn logger_worker(
     evt_sender: Sender<SynchronizationEvent>,
 ) {
     let now = Utc::now();
-    let skipped_log_path = archive_path.join(format!(
-        "{}_{}_SKP.log",
+    let ignored_log_path = archive_path.join(format!(
+        "{}_{}_IGN.log",
         now.format("%Y%m%d-%H%M"),
         source_id
     ));
@@ -193,8 +199,8 @@ fn logger_worker(
         source_id
     ));
 
-    let mut skipped_f =
-        BufWriter::new(File::create(skipped_log_path).expect("Error creating skipped log file"));
+    let mut ignored_f =
+        BufWriter::new(File::create(ignored_log_path).expect("Error creating skipped log file"));
     let mut errored_f =
         BufWriter::new(File::create(errored_log_path).expect("Error creating skipped log file"));
     let mut completed_f =
@@ -206,10 +212,13 @@ fn logger_worker(
                 src,
                 dst,
                 generated,
+                partial,
             } => completed_f
-                .write(format!("src: {src:?} dst: {dst:?} gen: {generated}\n").as_bytes()),
+                .write(format!("src: {src:?} dst: {dst:?} gen: {generated} par: {partial}\n").as_bytes()),
             SynchronizationEvent::Skipped { src, existing } => {
-                skipped_f.write(format!("src: {src:?} ex: {existing:?}\n").as_bytes())
+                ignored_f.write(format!("src: {src:?} cause: file already exists {existing:?}\n").as_bytes())
+            }SynchronizationEvent::Ignored { src, cause } => {
+                ignored_f.write(format!("src: {src:?} cause: {cause}\n").as_bytes())
             }
             SynchronizationEvent::Errored { src, cause } => {
                 errored_f.write(format!("src: {src:?} cause: '{cause}'\n").as_bytes())
@@ -314,79 +323,57 @@ fn process_images(
             Ok(Some((Some(datetime), exif))) => (Some(datetime), Some(exif)),
         };
 
-        let date_path = if let Some(datetime) = datetime {
-            ctx.target_base_dir
-                .join(datetime.year().to_string())
-                .join(datetime.format("%m.%d").to_string())
-        } else {
-            ctx.target_base_dir.join("no-date")
-        };
 
-        let img_path = date_path.join("img");
-        if !img_path.exists() {
-            fs::create_dir_all(&img_path).expect("Error creating dir");
-        }
-        let source_dir = p.parent().expect("No source dir found");
-        let link_path = date_path.join(format!(
-            "{:08X}.{:08X}.{}",
+        let archive_paths = build_paths(
             partition_crc,
-            CASTAGNOLI.checksum(
-                source_dir
-                    .strip_prefix(&ctx.source_base_dir)
-                    .expect("Error stripping prefix")
-                    .as_os_str()
-                    .as_bytes()
-            ),
-            source_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .expect("Error extracting parent dir"),
-        ));
-        let link_file_path = link_path.join(p.file_name().expect("Error extracting filename"));
-        if link_file_path.exists() {
+            &ctx.target_base_dir,
+            &p.strip_prefix(&ctx.source_base_dir).expect("Error extracting base dir"),
+            datetime.as_ref(),
+        ).expect("Error building paths");
+
+        if !archive_paths.img_path.exists() {
+            fs::create_dir_all(&archive_paths.img_path).expect("Error creating dir");
+        }
+
+        if archive_paths.link_file_path.exists() {
             send_evt(SynchronizationEvent::Skipped {
                 src: p,
-                existing: link_file_path,
+                existing: archive_paths.link_file_path,
             });
             continue;
-        } else if !link_path.exists() {
-            fs::create_dir_all(&link_path).expect("Error creating dir");
+        } else if !archive_paths.link_dir_path.exists() {
+            fs::create_dir_all(&archive_paths.link_dir_path).expect("Error creating dir");
         }
 
         let out = image::open(p.as_path())
             .map_err(anyhow::Error::from)
             .and_then(|img| {
-                let file_name = if let Some(datetime) = &datetime {
-                    format!(
-                        "{}_{:08X}.jpg",
-                        datetime.format("%H%M%S"),
-                        CASTAGNOLI.checksum(img.as_bytes())
-                    )
-                } else {
-                    let creation_ts = std::fs::metadata(&p)?.modified()?;
-                    format!(
-                        "{}_{:08X}.jpg",
-                        DateTime::<Utc>::from(creation_ts).format("%Y%m%d-%H%M%S"),
-                        CASTAGNOLI.checksum(img.as_bytes())
-                    )
-                };
-                let file_path = img_path.join(&file_name);
+                if img.height() < 300 || img.width() < 300 {
+                    return Ok(ImgProcessOutcome::Ignored { cause: format!("Image is too small {}x{}", img.width(), img.height()) })
+                }
+                let digest = CASTAGNOLI.checksum(img.as_bytes());
+                let file_name = build_filename(
+                    datetime.as_ref(),
+                    std::fs::metadata(&p)?.modified()?,
+                    digest,
+                )?;
+                let file_path = archive_paths.img_path.join(&file_name);
                 let generated = if !file_path.exists() {
                     generate_thumb(&img, file_path.as_path())?;
                     true
                 } else {
                     false
                 };
-                if !link_file_path.exists() {
+                if !archive_paths.link_file_path.exists() {
                     std::os::unix::fs::symlink(
                         PathBuf::from("../img").join(file_name),
-                        link_file_path,
+                        archive_paths.link_file_path,
                     )?;
 
                     record_sender
                         .send(PhotoArchiveRow {
                             photo_ts: datetime,
-                            file_ts: DateTime::<Utc>::from(fs::metadata(&p)?.modified()?),
+                            file_ts: fs::metadata(&p)?.modified()?,
                             source_id: ctx.partition_id.clone(),
                             source_path: p
                                 .strip_prefix(&ctx.source_base_dir)
@@ -398,10 +385,11 @@ fn process_images(
                                 .len(),
                             height: img.height(),
                             width: img.width(),
+                            digest,
                         })
                         .expect("Error sending photo archive row");
                 }
-                Ok((generated, file_path))
+                Ok(ImgProcessOutcome::Completed { generated, partial: datetime.is_none(), dst_path: file_path })
             });
 
         match out {
@@ -409,13 +397,23 @@ fn process_images(
                 src: p,
                 cause: format!("Error processing image - {err}"),
             }),
-            Ok((generated, dst_path)) => send_evt(SynchronizationEvent::Stored {
+            Ok(ImgProcessOutcome::Completed { generated, partial, dst_path }) => send_evt(SynchronizationEvent::Stored {
                 src: p,
                 dst: dst_path,
                 generated,
+                partial,
+            }),
+            Ok(ImgProcessOutcome::Ignored { cause }) => send_evt(SynchronizationEvent::Ignored {
+                src: p,
+                cause
             }),
         }
     }
+}
+
+enum ImgProcessOutcome {
+    Completed { generated: bool, partial: bool, dst_path: PathBuf },
+    Ignored { cause: String },
 }
 
 fn extract_exif(image_path: &Path) -> anyhow::Result<Option<Exif>> {

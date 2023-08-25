@@ -2,22 +2,24 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::ops::Add;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
-use clap::builder::OsStr;
 use exif::Exif;
 use serde::{Deserialize, Serialize};
 
 pub struct PhotoArchiveRow {
     pub photo_ts: Option<NaiveDateTime>,
-    pub file_ts: DateTime<Utc>,
+    pub file_ts: SystemTime,
     pub source_id: String,
     pub source_path: PathBuf,
     pub exif: Option<Exif>,
     pub size: u64,
     pub height: u32,
     pub width: u32,
+    pub digest: u32,
 }
 
 pub struct PhotoArchiveRecordsStore {
@@ -34,7 +36,9 @@ impl PhotoArchiveRecordsStore {
     pub fn write(&self, row: PhotoArchiveRow) {
         let frame = serde_json::to_string(&PhotoArchiveJsonRow {
             timestamp: row.photo_ts.map(|ts| ts.timestamp()),
-            file_ts: row.file_ts.naive_local().timestamp(),
+            file_ts: row.file_ts.duration_since(SystemTime::UNIX_EPOCH)
+                .expect("Ts is before unix epoch")
+                .as_secs(),
             source: row.source_id,
             path: row.source_path.as_os_str().to_str().map(ToString::to_string).unwrap_or_default(),
             exif: row.exif
@@ -43,6 +47,7 @@ impl PhotoArchiveRecordsStore {
             size: row.size,
             height: row.height,
             width: row.width,
+            crc: row.digest,
         }).unwrap();
 
         let mut file = std::fs::File::options()
@@ -89,23 +94,46 @@ impl PhotoArchiveRecordsStore {
 }
 
 #[derive(Deserialize, Serialize)]
-struct PhotoArchiveJsonRow {
-    #[serde(rename="ts")]
+pub struct PhotoArchiveJsonRow {
+    #[serde(rename = "ts")]
     timestamp: Option<i64>,
-    #[serde(rename="fts")]
-    file_ts: i64,
-    #[serde(rename="src")]
+    #[serde(rename = "fts")]
+    file_ts: u64,
+    #[serde(rename = "src")]
     source: String,
-    #[serde(rename="pth")]
+    #[serde(rename = "pth")]
     path: String,
-    #[serde(rename="exf", with="base64")]
+    #[serde(rename = "exf", with = "base64")]
     exif: Vec<u8>,
-    #[serde(rename="siz")]
+    #[serde(rename = "siz")]
     size: u64,
-    #[serde(rename="hgh")]
+    #[serde(rename = "hgh")]
     height: u32,
-    #[serde(rename="wdt")]
+    #[serde(rename = "wdt")]
     width: u32,
+    crc: u32,
+}
+
+impl PhotoArchiveJsonRow {
+    pub fn timestamp(&self) -> Option<NaiveDateTime> {
+        self.timestamp.and_then(|ts| NaiveDateTime::from_timestamp_opt(ts, 0))
+    }
+
+    pub fn file_timestamp(&self) -> SystemTime {
+        SystemTime::UNIX_EPOCH.add(Duration::from_secs(self.file_ts as u64))
+    }
+
+    pub fn source_id(&self) -> &str {
+        &self.source
+    }
+
+    pub fn source_path(&self) -> PathBuf {
+        PathBuf::from(&self.path)
+    }
+
+    pub fn digest(&self) -> u32 {
+        self.crc
+    }
 }
 
 mod base64 {
