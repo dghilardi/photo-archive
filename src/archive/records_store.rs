@@ -1,10 +1,13 @@
 use std::collections::HashMap;
-use std::io::Write;
+use std::fs;
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
+use clap::builder::OsStr;
 use exif::Exif;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub struct PhotoArchiveRow {
     pub photo_ts: Option<NaiveDateTime>,
@@ -51,9 +54,41 @@ impl PhotoArchiveRecordsStore {
         file.write(frame.as_bytes()).unwrap();
         file.write(b"\n").unwrap();
     }
+
+    fn indexes_list(&self) -> anyhow::Result<impl Iterator<Item=PathBuf>> {
+        let iter = fs::read_dir(&self.base_dir)?
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| Some(entry.path().join("index.json")).filter(|p| p.is_file()));
+        Ok(iter)
+    }
+
+    pub fn retain(&self, mut f: impl FnMut(&PhotoArchiveJsonRow) -> bool) -> anyhow::Result<()> {
+        for index_path in self.indexes_list()? {
+            let file = File::open(&index_path)?;
+            let reader = BufReader::new(file);
+
+            let temp_path = PathBuf::from(format!("/tmp/index.{}.{}.json", index_path.parent().unwrap().file_name().and_then(|name| name.to_str()).unwrap_or("-"), Utc::now().format("%Y%m%d-%H%M%S")));
+            let temp_file = File::create(&temp_path)?;
+            let mut writer = BufWriter::new(temp_file);
+
+            for res_line in reader.lines() {
+                let line = res_line?;
+                let row = serde_json::from_str::<PhotoArchiveJsonRow>(&line)?;
+                if f(&row) {
+                    writer.write(line.as_bytes())?;
+                }
+            }
+            writer.flush()?;
+            drop(writer);
+
+            std::fs::rename(&temp_path, &index_path)?;
+        }
+        Ok(())
+    }
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct PhotoArchiveJsonRow {
     #[serde(rename="ts")]
     timestamp: Option<i64>,
