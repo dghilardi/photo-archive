@@ -3,12 +3,8 @@ use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-
-#[derive(Debug, Clone)]
-pub struct PartitionInfo {
-    pub device_path: PathBuf,
-    pub partition_id: String,
-}
+use anyhow::bail;
+use crate::common::fs::model::{MountedPartitionInfo, PartitionInfo, ProcMountEntry};
 
 fn disk_by_uuid_device_path(uuid: &str) -> PathBuf {
     PathBuf::from("/dev/disk/by-uuid").join(uuid)
@@ -75,36 +71,6 @@ fn partitions_info_lookup() -> Result<HashMap<PathBuf, PartitionInfo>, std::io::
     Ok(result)
 }
 
-#[derive(Clone, Debug)]
-pub struct MountedPartitionInfo {
-    pub mount_point: PathBuf,
-    pub fs_type: String,
-    pub info: PartitionInfo,
-}
-
-impl Display for MountedPartitionInfo {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}\t{}",
-            self.info.partition_id,
-            self.mount_point
-                .as_os_str()
-                .to_str()
-                .map(ToString::to_string)
-                .unwrap_or_default()
-        )
-    }
-}
-
-struct ProcMountEntry {
-    device: String,
-    mount_point: PathBuf,
-    fs_type: String,
-    mode: String,
-    dummy: Vec<String>,
-}
-
 fn read_proc_mounts() -> Result<Vec<ProcMountEntry>, std::io::Error> {
     let file = File::open("/proc/mounts")?;
     let mut vdisks: Vec<ProcMountEntry> = Vec::new();
@@ -161,7 +127,7 @@ fn is_supported_fs(fs_type: &str) -> bool {
     ["vfat", "ntfs3", "fuseblk", "iso9660"].contains(&fs_type)
 }
 
-pub fn partition_by_id(partition_id: &str) -> Result<MountedPartitionInfo, std::io::Error> {
+pub fn partition_by_id(partition_id: &str) -> anyhow::Result<MountedPartitionInfo> {
     let lookup = partitions_info_lookup()?;
     let proc_mounts = read_proc_mounts()?
         .into_iter()
@@ -176,8 +142,8 @@ pub fn partition_by_id(partition_id: &str) -> Result<MountedPartitionInfo, std::
         .collect::<Vec<_>>();
 
     match &proc_mounts[..] {
-        [] => panic!("No partition found"),
+        [] => bail!("No partition found"),
         [mpi] => Ok(mpi.clone()),
-        [_, ..] => panic!("Multiple partitions with same id"),
+        [_, ..] => bail!("Multiple partitions with same id"),
     }
 }
