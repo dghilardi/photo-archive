@@ -35,7 +35,7 @@ pub fn build_paths(
         source_dir
             .file_name()
             .and_then(|n| n.to_str())
-            .expect("Error extracting parent dir"),
+            .unwrap_or("ROOT"),
     ));
     let link_file_path = link_dir_path.join(source_relative_path.file_name().expect("Error extracting filename"));
 

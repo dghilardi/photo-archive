@@ -1,6 +1,7 @@
 mod linux;
-mod model;
+pub mod model;
 mod freebsd;
+pub mod common;
 
 #[cfg(target_os = "linux")]
 pub use linux::*;

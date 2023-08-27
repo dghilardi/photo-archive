@@ -26,6 +26,9 @@ pub struct ImportSourceCliArgs {
     /// Id of the source to import
     #[arg(short, long)]
     pub source_id: Option<String>,
+    /// Path of the source to import
+    #[arg(long)]
+    pub source_path: Option<String>,
     /// Name of the source to import
     #[arg(long)]
     pub source_name: Option<String>,
@@ -45,6 +48,9 @@ pub struct SyncSourceCliArgs {
     /// Id of the source to import
     #[arg(short, long)]
     pub source_id: Option<String>,
+    /// Path of the source to import
+    #[arg(long)]
+    pub source_path: Option<String>,
     /// Archive path
     #[arg(short, long)]
     pub target: PathBuf,

@@ -1,12 +1,14 @@
 use std::ffi::OsStr;
 use std::fs::create_dir_all;
+use std::path::PathBuf;
 use anyhow::{anyhow, Context};
 use clap::Parser;
 use inquire::{Select, Text};
 use photo_archive::archive::remove::remove_by_source;
-use photo_archive::archive::sync::{SynchronizationEvent, synchronize_source, SyncOpts, SyncSource};
+use photo_archive::archive::sync::{SourceCoordinates, SynchronizationEvent, synchronize_source, SyncOpts, SyncSource};
 
 use photo_archive::common::fs::{list_mounted_partitions, partition_by_id};
+use photo_archive::common::fs::common::partition_by_path;
 use photo_archive::repository::sources::SourcesRepo;
 
 use crate::args::{ImportSourceCliArgs, PhotoArchiveArgs, PhotoArchiveCommand, RemoveSourceCliArgs, SyncSourceCliArgs};
@@ -46,8 +48,8 @@ fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
         anyhow::bail!("Target path is not a directory")
     }
 
-    let source_part = args.source_id
-        .map(|source_id| partition_by_id(&source_id).context("Error mapping source_id"))
+    let source_part = args.source_path.as_ref().map(|p| partition_by_path(&PathBuf::from(p)).context("Error mapping path"))
+        .or_else(|| args.source_id.map(|source_id| partition_by_id(&source_id).context("Error mapping source_id")))
         .unwrap_or_else(|| {
             let available_partitions = list_mounted_partitions()?;
 
@@ -75,7 +77,8 @@ fn import_source(args: ImportSourceCliArgs) -> anyhow::Result<()> {
     let task = synchronize_source(SyncOpts {
         count_images: true,
         source: SyncSource::New {
-            id: source_part.info.partition_id,
+            coord: args.source_path.as_ref().map(|path| SourceCoordinates::Path(PathBuf::from(path)))
+                .unwrap_or_else(|| SourceCoordinates::Id(source_part.info.partition_id)),
             name: source_name,
             group: source_group,
             tags: vec![],
@@ -113,8 +116,8 @@ fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
         anyhow::bail!("Target path is not a directory")
     }
 
-    let source_part = args.source_id
-        .map(|source_id| partition_by_id(&source_id).context("Error mapping source_id"))
+    let source_part = args.source_path.as_ref().map(|p| partition_by_path(&PathBuf::from(p)).context("Error mapping path"))
+        .or_else(|| args.source_id.map(|source_id| partition_by_id(&source_id).context("Error mapping source_id")))
         .unwrap_or_else(|| {
             let repo = SourcesRepo::new(args.target.clone());
             let registered_sources = repo.all()?;
@@ -133,7 +136,8 @@ fn sync_source(args: SyncSourceCliArgs) -> anyhow::Result<()> {
     let task = synchronize_source(SyncOpts {
         count_images: true,
         source: SyncSource::Existing {
-            id: source_part.info.partition_id,
+            coord: args.source_path.as_ref().map(|path| SourceCoordinates::Path(PathBuf::from(path)))
+                .unwrap_or_else(|| SourceCoordinates::Id(source_part.info.partition_id)),
         },
     }, &args.target)?;
 

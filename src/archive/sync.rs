@@ -18,7 +18,7 @@ use image::{DynamicImage, ImageFormat};
 use crate::archive::common::{build_filename, build_paths};
 
 use crate::archive::records_store::{PhotoArchiveRecordsStore, PhotoArchiveRow};
-use crate::common::fs::partition_by_id;
+use crate::common::fs::model::MountedPartitionInfo;
 use crate::repository::sources::{SourceJsonRow, SourcesRepo};
 
 pub struct SyncOpts {
@@ -26,15 +26,20 @@ pub struct SyncOpts {
     pub source: SyncSource,
 }
 
+pub enum SourceCoordinates {
+    Id(String),
+    Path(PathBuf),
+}
+
 pub enum SyncSource {
     New {
-        id: String,
+        coord: SourceCoordinates,
         name: String,
         group: String,
         tags: Vec<String>,
     },
     Existing {
-        id: String,
+        coord: SourceCoordinates,
     },
 }
 
@@ -86,30 +91,37 @@ impl SyncrhonizationTask {
     }
 }
 
+fn find_mount_info(coord: &SourceCoordinates) -> anyhow::Result<MountedPartitionInfo> {
+    match coord {
+        SourceCoordinates::Id(id) => crate::common::fs::partition_by_id(&id),
+        SourceCoordinates::Path(path) => crate::common::fs::common::partition_by_path(&path),
+    }
+}
+
 pub fn synchronize_source(opts: SyncOpts, target: &Path) -> anyhow::Result<SyncrhonizationTask> {
     let repo = SourcesRepo::new(target.to_path_buf());
     let (source, source_id) = match opts.source {
         SyncSource::New {
-            id,
+            coord: id,
             name,
             group,
             tags,
         } => {
-            let mount_info = partition_by_id(&id)?;
+            let mount_info = find_mount_info(&id)?;
             repo.write_entry(SourceJsonRow {
-                id: id.clone(),
+                id: mount_info.info.partition_id.clone(),
                 name,
                 group,
                 tags,
             })?;
-            (mount_info.mount_point, id)
+            (mount_info.mount_point, mount_info.info.partition_id)
         }
-        SyncSource::Existing { id } => {
-            let mount_info = partition_by_id(&id)?;
-            repo.find_by_id(&id)?
-                .ok_or_else(|| anyhow::anyhow!("Source {id} is not currently registered"))?;
+        SyncSource::Existing { coord: id } => {
+            let mount_info = find_mount_info(&id)?;
+            repo.find_by_id(&mount_info.info.partition_id)?
+                .ok_or_else(|| anyhow::anyhow!("Source {} is not currently registered", mount_info.info.partition_id))?;
 
-            (mount_info.mount_point, id)
+            (mount_info.mount_point, mount_info.info.partition_id)
         }
     };
 
